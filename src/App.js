@@ -10,8 +10,10 @@ import {
   FiDollarSign,
   FiLogOut,
   FiMenu,
-  FiX
+  FiX,
+  FiRefreshCw
 } from 'react-icons/fi';
+import { BiSync } from 'react-icons/bi';
 
 // Helper function to format dates
 const formatDate = (dateString) => {
@@ -90,6 +92,16 @@ const MemberManagement = () => {
   useEffect(() => {
     fetchMembers();
   }, []);
+
+  // Auto-hide success messages after 3 seconds
+  useEffect(() => {
+    if (message && message.includes('successfully')) {
+      const timer = setTimeout(() => {
+        setMessage('');
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [message]);
 
   // Filter and sort members
   useEffect(() => {
@@ -274,8 +286,10 @@ const MemberManagement = () => {
         <div className="members-card">
           <div className="card-header">
             <div className="header-content">
-              <h2>Members Directory</h2>
-              <span className="member-count">{filteredMembers.length} members</span>
+              <div className="header-left">
+                <h2>Members Directory</h2>
+                <span className="member-count">{filteredMembers.length} member{filteredMembers.length !== 1 ? 's' : ''}</span>
+              </div>
             </div>
             
             <div className="filters-row">
@@ -290,8 +304,6 @@ const MemberManagement = () => {
               </div>
               
               <div className="filter-controls">
-                
-                
                 <select
                   value={rateTypeFilter}
                   onChange={(e) => setRateTypeFilter(e.target.value)}
@@ -302,6 +314,10 @@ const MemberManagement = () => {
                   <option value="30min">30 Minutes</option>
                   <option value="time played">Time Played</option>
                 </select>
+                
+                <button className="btn-card-refresh" onClick={fetchMembers} disabled={membersLoading} title="Refresh Members">
+                  <BiSync className={membersLoading ? 'spinning' : ''} />
+                </button>
               </div>
             </div>
           </div>
@@ -455,6 +471,601 @@ const PlayersList = () => {
   );
 };
 
+// --- Start Session Component ---
+const StartSessionForm = () => {
+  const [sessionType, setSessionType] = useState('guest');
+  const [formData, setFormData] = useState({
+    guestName: '',
+    guestContact: '',
+    memberName: '',
+    tableId: ''
+  });
+  const [selectedMember, setSelectedMember] = useState(null);
+  const [members, setMembers] = useState([]);
+  const [tables, setTables] = useState([]);
+  const [filteredMembers, setFilteredMembers] = useState([]);
+  const [showMemberDropdown, setShowMemberDropdown] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  // Fetch members and tables on component mount
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const token = localStorage.getItem('adminToken');
+        const headers = {
+          'Authorization': `Bearer ${token}`
+        };
+
+        // Fetch members
+        const membersResponse = await fetch('http://localhost:8000/customers', { headers });
+        if (membersResponse.ok) {
+          const membersData = await membersResponse.json();
+          setMembers(membersData);
+        }
+
+        // Fetch available tables
+        const tablesResponse = await fetch('http://localhost:8000/tables/available', { headers });
+        if (tablesResponse.ok) {
+          const tablesData = await tablesResponse.json();
+          setTables(tablesData);
+        } else {
+          // If no tables exist, create sample tables
+          const createResponse = await fetch('http://localhost:8000/tables/create-sample', {
+            method: 'POST',
+            headers
+          });
+          if (createResponse.ok) {
+            // Fetch tables again after creating
+            const newTablesResponse = await fetch('http://localhost:8000/tables/available', { headers });
+            if (newTablesResponse.ok) {
+              const newTablesData = await newTablesResponse.json();
+              setTables(newTablesData);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching data:', err);
+        setError('Failed to load data. Please check server connection.');
+      }
+    };
+
+    fetchData();
+  }, []);
+
+  // Filter members based on name input
+  useEffect(() => {
+    if (formData.memberName && sessionType === 'member') {
+      const filtered = members.filter(member => 
+        member.name.toLowerCase().includes(formData.memberName.toLowerCase())
+      );
+      setFilteredMembers(filtered);
+      setShowMemberDropdown(filtered.length > 0 && formData.memberName.length > 0);
+    } else {
+      setFilteredMembers([]);
+      setShowMemberDropdown(false);
+    }
+  }, [formData.memberName, members, sessionType]);
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+    
+    // Clear selected member if member name is changed
+    if (name === 'memberName' && selectedMember) {
+      setSelectedMember(null);
+    }
+  };
+
+  const handleMemberSelect = (member) => {
+    setSelectedMember(member);
+    setFormData(prev => ({ ...prev, memberName: member.name }));
+    setShowMemberDropdown(false);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setMessage('');
+    setError('');
+
+    try {
+      const token = localStorage.getItem('adminToken');
+      const sessionData = {
+        session_type: sessionType,
+        table_id: parseInt(formData.tableId)
+      };
+
+      if (sessionType === 'guest') {
+        sessionData.guest_name = formData.guestName;
+        sessionData.guest_contact = formData.guestContact;
+      } else {
+        if (!selectedMember) {
+          setError('Please select a valid member from the dropdown.');
+          setLoading(false);
+          return;
+        }
+        sessionData.customer_id = selectedMember.id;
+      }
+
+      const response = await fetch('http://localhost:8000/sessions/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(sessionData)
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        setMessage(`Session started successfully! Session ID: ${result.id}`);
+        // Reset form
+        setFormData({
+          guestName: '',
+          guestContact: '',
+          memberName: '',
+          tableId: ''
+        });
+        setSelectedMember(null);
+        
+        // Refresh available tables
+        const tablesResponse = await fetch('http://localhost:8000/tables/available', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (tablesResponse.ok) {
+          const tablesData = await tablesResponse.json();
+          setTables(tablesData);
+        }
+      } else {
+        const errorData = await response.json();
+        setError(errorData.detail || 'Failed to start session');
+      }
+    } catch (err) {
+      setError('An error occurred. Please check the server connection.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="start-session-container">
+      <div className="session-card">
+        <div className="card-header">
+          <h2>Start New Session</h2>
+          <p>Begin a snooker session for a member or guest</p>
+        </div>
+
+        <form className="session-form" onSubmit={handleSubmit}>
+          {/* Session Type Selection */}
+          <div className="session-type-section">
+            <label className="section-label">Session Type</label>
+            <div className="radio-group">
+              <label className={`radio-option ${sessionType === 'guest' ? 'active' : ''}`}>
+                <input
+                  type="radio"
+                  name="sessionType"
+                  value="guest"
+                  checked={sessionType === 'guest'}
+                  onChange={(e) => setSessionType(e.target.value)}
+                />
+                <span className="radio-label">Guest</span>
+              </label>
+              <label className={`radio-option ${sessionType === 'member' ? 'active' : ''}`}>
+                <input
+                  type="radio"
+                  name="sessionType"
+                  value="member"
+                  checked={sessionType === 'member'}
+                  onChange={(e) => setSessionType(e.target.value)}
+                />
+                <span className="radio-label">Member</span>
+              </label>
+            </div>
+          </div>
+
+          {/* Dynamic Form Fields */}
+          <div className="form-fields">
+            {sessionType === 'guest' ? (
+              // Guest Form Fields
+              <>
+                <div className="form-field">
+                  <label>Guest Name *</label>
+                  <input
+                    type="text"
+                    name="guestName"
+                    value={formData.guestName}
+                    onChange={handleInputChange}
+                    placeholder="Enter guest name"
+                    required
+                  />
+                </div>
+                <div className="form-field">
+                  <label>Contact Number *</label>
+                  <input
+                    type="text"
+                    name="guestContact"
+                    value={formData.guestContact}
+                    onChange={handleInputChange}
+                    placeholder="Enter contact number"
+                    required
+                  />
+                </div>
+              </>
+            ) : (
+              // Member Form Fields
+              <>
+                <div className="form-field member-search">
+                  <label>Member Name *</label>
+                  <div className="search-container">
+                    <input
+                      type="text"
+                      name="memberName"
+                      value={formData.memberName}
+                      onChange={handleInputChange}
+                      placeholder="Start typing member name..."
+                      required
+                      autoComplete="off"
+                    />
+                    {showMemberDropdown && (
+                      <div className="member-dropdown">
+                        {filteredMembers.map(member => (
+                          <div
+                            key={member.id}
+                            className="member-option"
+                            onClick={() => handleMemberSelect(member)}
+                          >
+                            <div className="member-name">{member.name}</div>
+                            <div className="member-contact">{member.contact_number}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Member Details (Read-only when member is selected) */}
+                {selectedMember && (
+                  <div className="member-details">
+                    <div className="details-grid">
+                      <div className="detail-field">
+                        <label>Contact Number</label>
+                        <input type="text" value={selectedMember.contact_number} readOnly />
+                      </div>
+                      <div className="detail-field">
+                        <label>Rate Type</label>
+                        <input type="text" value={selectedMember.rate_type} readOnly />
+                      </div>
+                      <div className="detail-field">
+                        <label>Rate Amount</label>
+                        <input type="text" value={`$${selectedMember.rate_amount.toFixed(2)}`} readOnly />
+                      </div>
+                      <div className="detail-field">
+                        <label>Discount</label>
+                        <input type="text" value={`${selectedMember.discount.toFixed(1)}%`} readOnly />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Table Selection */}
+            <div className="form-field">
+              <label>Select Table *</label>
+              <select
+                name="tableId"
+                value={formData.tableId}
+                onChange={handleInputChange}
+                required
+              >
+                <option value="">Choose an available table</option>
+                {tables.map(table => (
+                  <option key={table.id} value={table.id}>
+                    {table.table_name} - {table.status}
+                  </option>
+                ))}
+              </select>
+              {tables.length === 0 && (
+                <p className="no-tables-msg">No tables available. All tables are currently occupied.</p>
+              )}
+            </div>
+          </div>
+
+          {/* Submit Button */}
+          <div className="form-actions">
+            <button 
+              type="submit" 
+              className="start-session-btn" 
+              disabled={loading || tables.length === 0}
+            >
+              {loading ? (
+                <>
+                  <span className="spinner"></span>
+                  Starting Session...
+                </>
+              ) : (
+                'Start Session'
+              )}
+            </button>
+          </div>
+        </form>
+
+        {/* Messages */}
+        {message && <div className="alert alert-success">{message}</div>}
+        {error && <div className="alert alert-error">{error}</div>}
+      </div>
+    </div>
+  );
+};
+
+// Table Management Component
+const TableManagement = () => {
+  const [tables, setTables] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [editingTable, setEditingTable] = useState(null);
+  const [formData, setFormData] = useState({ table_name: '', status: 'vacant' });
+  const [message, setMessage] = useState('');
+
+  // Fetch tables
+  const fetchTables = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch('http://127.0.0.1:8000/tables');
+      if (response.ok) {
+        const data = await response.json();
+        setTables(data);
+        setError('');
+      } else {
+        setError('Failed to fetch tables');
+      }
+    } catch (err) {
+      setError('Error connecting to server');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchTables();
+  }, []);
+
+  // Auto-hide success messages after 3 seconds
+  useEffect(() => {
+    if (message && (message.includes('successfully') || message.includes('created'))) {
+      const timer = setTimeout(() => {
+        setMessage('');
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [message]);
+
+  // Handle form submission (add/edit)
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setMessage('');
+    
+    try {
+      const url = editingTable 
+        ? `http://127.0.0.1:8000/tables/${editingTable.id}`
+        : 'http://127.0.0.1:8000/tables/create';
+      
+      const method = editingTable ? 'PUT' : 'POST';
+      
+      const response = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(formData),
+      });
+
+      if (response.ok) {
+        const action = editingTable ? 'updated' : 'created';
+        setMessage(`Table ${action} successfully!`);
+        setFormData({ table_name: '', status: 'vacant' });
+        setShowAddForm(false);
+        setEditingTable(null);
+        fetchTables();
+      } else {
+        const errorData = await response.json();
+        setMessage(errorData.detail || `Failed to ${editingTable ? 'update' : 'create'} table`);
+      }
+    } catch (err) {
+      setMessage('Error connecting to server');
+    }
+  };
+
+  // Handle delete
+  const handleDelete = async (tableId, tableName) => {
+    if (!window.confirm(`Are you sure you want to delete "${tableName}"?`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/tables/${tableId}`, {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        setMessage('Table deleted successfully!');
+        fetchTables();
+      } else {
+        const errorData = await response.json();
+        setMessage(errorData.detail || 'Failed to delete table');
+      }
+    } catch (err) {
+      setMessage('Error connecting to server');
+    }
+  };
+
+  // Handle edit
+  const handleEdit = (table) => {
+    setEditingTable(table);
+    setFormData({ table_name: table.table_name, status: table.status });
+    setShowAddForm(true);
+  };
+
+  // Cancel form
+  const handleCancel = () => {
+    setShowAddForm(false);
+    setEditingTable(null);
+    setFormData({ table_name: '', status: 'vacant' });
+    setMessage('');
+  };
+
+  // Create sample tables
+  const createSampleTables = async () => {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/tables/create-sample', {
+        method: 'POST',
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        setMessage(result.message);
+        fetchTables();
+      } else {
+        setMessage('Failed to create sample tables');
+      }
+    } catch (err) {
+      setMessage('Error connecting to server');
+    }
+  };
+
+  const getStatusBadge = (status) => {
+    const statusClass = status === 'vacant' ? 'status-vacant' : 
+                       status === 'occupied' ? 'status-occupied' : 
+                       status === 'reserved' ? 'status-reserved' : 'status-maintenance';
+    return <span className={`status-badge ${statusClass}`}>{status.toUpperCase()}</span>;
+  };
+
+  return (
+    <div className="table-management-container">
+      <div className="management-header">
+        <h2><FiTable /> Table Management</h2>
+        <div className="header-actions">
+          <button 
+            className="btn-primary"
+            onClick={() => setShowAddForm(true)}
+            disabled={showAddForm}
+          >
+            <FiUserPlus /> Add Table
+          </button>
+        </div>
+      </div>
+
+      {message && (
+        <div className={`alert ${message.includes('successfully') || message.includes('created') ? 'alert-success' : 'alert-error'}`}>
+          {message}
+        </div>
+      )}
+
+      {/* Add/Edit Form */}
+      {showAddForm && (
+        <div className="form-card">
+          <h3>{editingTable ? 'Edit Table' : 'Add New Table'}</h3>
+          <form onSubmit={handleSubmit} className="table-form">
+            <div className="form-group">
+              <label htmlFor="table_name">Table Name *</label>
+              <input
+                type="text"
+                id="table_name"
+                value={formData.table_name}
+                onChange={(e) => setFormData({...formData, table_name: e.target.value})}
+                placeholder="Enter table name (e.g., Table 1, VIP Table)"
+                required
+              />
+            </div>
+            
+            <div className="form-group">
+              <label htmlFor="status">Status</label>
+              <select
+                id="status"
+                value={formData.status}
+                onChange={(e) => setFormData({...formData, status: e.target.value})}
+              >
+                <option value="vacant">Vacant</option>
+                <option value="occupied">Occupied</option>
+                <option value="reserved">Reserved</option>
+                <option value="maintenance">Maintenance</option>
+              </select>
+            </div>
+            
+            <div className="form-actions">
+              <button type="submit" className="btn-primary">
+                <FiFileText /> {editingTable ? 'Update Table' : 'Add Table'}
+              </button>
+              <button type="button" className="btn-secondary" onClick={handleCancel}>
+                <FiX /> Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Tables List */}
+      <div className="tables-card">
+        <div className="card-header">
+          <h3>All Tables ({tables.length})</h3>
+          <button className="btn-refresh" onClick={fetchTables} disabled={loading} title="Refresh Tables">
+            <BiSync className={loading ? 'spinning' : ''} />
+          </button>
+        </div>
+        
+        {loading ? (
+          <div className="loading-state">
+            <FiGrid className="spinning" /> Loading tables...
+          </div>
+        ) : error ? (
+          <div className="error-state">
+            <p>{error}</p>
+            <button className="btn-primary" onClick={fetchTables}>
+              <FiGrid /> Retry
+            </button>
+          </div>
+        ) : tables.length === 0 ? (
+          <div className="empty-state">
+            <FiTable size={48} />
+            <h3>No Tables Found</h3>
+            <p>Click "Add Table" above to create your first table.</p>
+          </div>
+        ) : (
+          <div className="tables-grid">
+            {tables.map((table) => (
+              <div key={table.id} className="table-card">
+                <div className="table-info">
+                  <h4>{table.table_name}</h4>
+                  {getStatusBadge(table.status)}
+                </div>
+                <div className="table-actions">
+                  <button 
+                    className="btn-edit"
+                    onClick={() => handleEdit(table)}
+                    title="Edit Table"
+                  >
+                    <FiFileText />
+                  </button>
+                  <button 
+                    className="btn-delete"
+                    onClick={() => handleDelete(table.id, table.table_name)}
+                    title="Delete Table"
+                  >
+                    <FiX />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [dashboardView, setDashboardView] = useState('home');
@@ -578,26 +1189,8 @@ function App() {
           )}
           {dashboardView === 'register' && <MemberManagement />}
           {dashboardView === 'customers' && <PlayersList />}
-          {dashboardView === 'startSession' && (
-            <section className="card">
-              <h2>Start Session</h2>
-              <form className="form-layout">
-                <div className="radio-group">
-                    <label><input type="radio" name="sessionType" value="guest" defaultChecked /> Guest</label>
-                    <label><input type="radio" name="sessionType" value="member" /> Member</label>
-                </div>
-                <input type="text" placeholder="Member Name (if applicable)" />
-                <input type="text" placeholder="Table Number" required />
-                <button className="primary-btn" type="submit">Start Session</button>
-              </form>
-            </section>
-          )}
-          {dashboardView === 'tables' && (
-            <section className="card">
-              <h2>Snooker Tables</h2>
-              <p>Manage snooker table details here.</p>
-            </section>
-          )}
+          {dashboardView === 'startSession' && <StartSessionForm />}
+          {dashboardView === 'tables' && <TableManagement />}
           {dashboardView === 'sessions' && (
             <section className="card">
               <h2>Sessions / Billing</h2>
@@ -621,7 +1214,7 @@ function App() {
       <div className="login-content">
         <h1 className="login-page-title">Snooker Club Billing System</h1>
         <div className="login-card">
-          <img src="/dashboard-img.jpg" alt="Snooker illustration" className="login-card-img" />
+          <img src="/dashboard-img.png" alt="Snooker illustration" className="login-card-img" />
           <h2>Admin Login</h2>
           <p>Please sign in to continue</p>
           <form className="form-layout" onSubmit={handleAdminLogin}>
