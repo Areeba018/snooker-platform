@@ -413,6 +413,7 @@ const PlayersList = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [endingSession, setEndingSession] = useState(null);
 
   // Auto-hide success messages
   useEffect(() => {
@@ -452,23 +453,165 @@ const PlayersList = () => {
   }, []);
 
   const getSessionDuration = (startTime) => {
+    // Simple: just use start time and current time
     const start = new Date(startTime);
     const now = new Date();
+    
+    // Calculate duration
     const diffMs = now - start;
     const diffMins = Math.floor(diffMs / 60000);
     const hours = Math.floor(diffMins / 60);
     const minutes = diffMins % 60;
-    return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+    
+    // Format times for display
+    const startTimeStr = start.toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    });
+    
+    const currentTimeStr = now.toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    });
+    
+    const durationStr = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+    return `${durationStr} (${startTimeStr} → ${currentTimeStr})`;
+  };
+
+  // Auto-refresh duration every 30 seconds for real-time updates
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // Force re-render to update durations in real-time
+      setActiveSessions(prev => [...prev]);
+    }, 30000); // Update every 30 seconds
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const formatStartTime = (startTime) => {
+    const date = new Date(startTime);
+    
+    // The database now stores Pakistani time directly, so no conversion needed
+    return date.toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    }) + ', ' + date.toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    });
+  };
+
+  // Simple duration calculation for debugging
+  const getSimpleDuration = (startTime) => {
+    let start = new Date(startTime);
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    
+    // Check if the year is wrong (2025 instead of current year)
+    if (start.getFullYear() === 2025) {
+      // Fix the year to current year
+      start.setFullYear(currentYear);
+    }
+    
+    const diffMs = now - start;
+    const diffMins = Math.floor(diffMs / 60000);
+    
+    // If duration is negative or very large, there's a date parsing issue
+    if (diffMins < 0 || diffMins > 1440) {
+      return 'Error';
+    }
+    
+    return diffMins;
   };
 
   const getPlayerName = (session) => {
-    // Use customer name if it's a member, otherwise use guest name
-    return session.customer_name || session.guest_name || `Member ID: ${session.customer_id}`;
+    // If we have all players data, show all player names
+    if (session.all_players && session.all_players.length > 0) {
+      const playerNames = session.all_players.map(player => player.name).join(', ');
+      return playerNames;
+    }
+    
+    // Fallback to original logic
+    const name = session.customer_name || session.guest_name || `Member ID: ${session.customer_id}`;
+    
+    // Check if this customer has multiple active sessions
+    const customerKey = session.customer_id || `${session.guest_name}-${session.guest_contact}`;
+    const sessionCount = activeSessions.filter(s => {
+      const sKey = s.customer_id || `${s.guest_name}-${s.guest_contact}`;
+      return sKey === customerKey;
+    }).length;
+    
+    if (sessionCount > 1) {
+      return `${name} ⚠️ (${sessionCount} sessions)`;
+    }
+    
+    return name;
   };
 
   const getPlayerContact = (session) => {
-    // Use customer contact if it's a member, otherwise use guest contact
+    // If we have all players data, show all contacts
+    if (session.all_players && session.all_players.length > 0) {
+      const contacts = session.all_players.map(player => player.contact || 'N/A').join(', ');
+      return contacts;
+    }
+    
+    // Fallback to original logic
     return session.customer_contact || session.guest_contact || 'N/A';
+  };
+
+  const getRateDisplay = (session) => {
+    if (session.rate_type) {
+      const rateType = session.rate_type === '30min' ? '30 Min' : 
+                      session.rate_type === 'hourly' ? 'Hourly' : 
+                      session.rate_type === 'time played' ? 'Time Played' : 
+                      session.rate_type;
+      return rateType;
+    }
+    return 'Guest';
+  };
+
+  const getRateAmount = (session) => {
+    if (session.rate_amount && session.rate_amount > 0) {
+      return `$${session.rate_amount.toFixed(2)}`;
+    }
+    return 'N/A';
+  };
+
+  const handleEndSession = async (sessionId) => {
+    if (!window.confirm('Are you sure you want to end this session?')) {
+      return;
+    }
+
+    setEndingSession(sessionId);
+    try {
+      const token = localStorage.getItem('adminToken');
+      const response = await fetch(`http://127.0.0.1:8000/sessions/${sessionId}/end`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        setSuccessMessage(`Session ended successfully! Duration: ${result.duration_formatted}, Total Cost: $${result.total_cost.toFixed(2)}`);
+        fetchActiveSessions(); // Refresh the list
+      } else {
+        const errorData = await response.json();
+        setError(errorData.detail || 'Failed to end session');
+      }
+    } catch (err) {
+      setError('Error ending session. Please try again.');
+    } finally {
+      setEndingSession(null);
+    }
   };
 
   return (
@@ -506,27 +649,56 @@ const PlayersList = () => {
               <thead>
                 <tr>
                   <th>Table</th>
+                  <th>Game Type</th>
+                  <th>Players</th>
                   <th>Player Name</th>
                   <th>Contact</th>
                   <th>Rate Type</th>
+                  <th>Rate</th>
                   <th>Duration</th>
                   <th>Start Time</th>
-                  <th>Status</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {activeSessions.map(session => (
                   <tr key={session.id}>
-                    <td>Table {session.table_id}</td>
+                    <td>{session.table_name || `Table ${session.table_id}`}</td>
+                    <td>
+                      <span className={`game-type-badge ${session.game_type || 'snooker'}`}>
+                        {session.game_type ? session.game_type.charAt(0).toUpperCase() + session.game_type.slice(1) : 'Snooker'}
+                      </span>
+                    </td>
+                    <td>
+                      <span className="player-count">
+                        {session.current_players || 1} of {session.total_players || 1}
+                      </span>
+                    </td>
                     <td>{getPlayerName(session)}</td>
                     <td>{getPlayerContact(session)}</td>
-                    <td>{session.rate_type || 'Guest'}</td>
+                    <td>{getRateDisplay(session)}</td>
+                    <td>{getRateAmount(session)}</td>
                     <td>{getSessionDuration(session.start_time)}</td>
-                    <td>{new Date(session.start_time).toLocaleString()}</td>
+                    <td>{formatStartTime(session.start_time)}</td>
                     <td>
-                      <span className="session-status active">
-                        ACTIVE
-                      </span>
+                      <button 
+                        className="btn-end-session"
+                        onClick={() => handleEndSession(session.id)}
+                        disabled={endingSession === session.id}
+                        title="End Session"
+                      >
+                        {endingSession === session.id ? (
+                          <>
+                            <span className="spinner"></span>
+                            Ending...
+                          </>
+                        ) : (
+                          <>
+                            <FiX />
+                            End Session
+                          </>
+                        )}
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -547,11 +719,45 @@ const PlayersList = () => {
 
 // --- Start Session Component ---
 const StartSessionForm = () => {
+  const [currentStep, setCurrentStep] = useState(1);
   const [sessionType, setSessionType] = useState('guest');
-  const [formData, setFormData] = useState({
+  const [gameType, setGameType] = useState('snooker');
+  const [totalPlayers, setTotalPlayers] = useState(1);
+  const [currentPlayers, setCurrentPlayers] = useState(1);
+  const [players, setPlayers] = useState([{
+    id: 1,
+    type: 'guest',
     guestName: '',
     guestContact: '',
+    memberId: null,
     memberName: '',
+    rateType: '',
+    rateAmount: ''
+  }]);
+
+  // Update players array when currentPlayers changes
+  useEffect(() => {
+    const newPlayers = [];
+    for (let i = 1; i <= Math.max(currentPlayers, 6); i++) {
+      const existingPlayer = players.find(p => p.id === i);
+      if (existingPlayer) {
+        newPlayers.push(existingPlayer);
+      } else {
+        newPlayers.push({
+          id: i,
+          type: 'guest',
+          guestName: '',
+          guestContact: '',
+          memberId: null,
+          memberName: '',
+          rateType: '',
+          rateAmount: ''
+        });
+      }
+    }
+    setPlayers(newPlayers);
+  }, [currentPlayers]);
+  const [formData, setFormData] = useState({
     tableId: ''
   });
   const [selectedMember, setSelectedMember] = useState(null);
@@ -559,6 +765,7 @@ const StartSessionForm = () => {
   const [tables, setTables] = useState([]);
   const [filteredMembers, setFilteredMembers] = useState([]);
   const [showMemberDropdown, setShowMemberDropdown] = useState(false);
+  const [activeMemberSearch, setActiveMemberSearch] = useState(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -608,34 +815,112 @@ const StartSessionForm = () => {
     fetchData();
   }, []);
 
-  // Filter members based on name input
+  // Click outside handler to close dropdown
   useEffect(() => {
-    if (formData.memberName && sessionType === 'member') {
+    const handleClickOutside = (event) => {
+      const searchContainers = document.querySelectorAll('.search-container');
+      let clickedInside = false;
+      
+      searchContainers.forEach(container => {
+        if (container.contains(event.target)) {
+          clickedInside = true;
+        }
+      });
+      
+      if (!clickedInside) {
+        setShowMemberDropdown(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  // Filter members based on name input for any player
+  useEffect(() => {
+    if (activeMemberSearch) {
       const filtered = members.filter(member => 
-        member.name.toLowerCase().includes(formData.memberName.toLowerCase())
+        member.name.toLowerCase().includes(activeMemberSearch.memberName.toLowerCase())
       );
       setFilteredMembers(filtered);
-      setShowMemberDropdown(filtered.length > 0 && formData.memberName.length > 0);
+      setShowMemberDropdown(filtered.length > 0);
     } else {
       setFilteredMembers([]);
       setShowMemberDropdown(false);
     }
-  }, [formData.memberName, members, sessionType]);
+  }, [activeMemberSearch, members]);
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
+  };
+
+  const handlePlayerInputChange = (playerId, field, value) => {
+    setPlayers(prev => prev.map(player => 
+      player.id === playerId 
+        ? { ...player, [field]: value }
+        : player
+    ));
     
-    // Clear selected member if member name is changed
-    if (name === 'memberName' && selectedMember) {
-      setSelectedMember(null);
+    // Handle member name input
+    if (field === 'memberName') {
+      setPlayers(prev => prev.map(player => 
+        player.id === playerId 
+          ? { ...player, memberId: null }
+          : player
+      ));
+      
+      // Set active member search for dropdown
+      if (value.length > 0) {
+        setActiveMemberSearch({ playerId, memberName: value });
+      } else {
+        setActiveMemberSearch(null);
+      }
     }
+  };
+
+  const handlePlayerTypeChange = (playerId, type) => {
+    setPlayers(prev => prev.map(player => 
+      player.id === playerId 
+        ? { 
+            ...player, 
+            type,
+            guestName: '',
+            guestContact: '',
+            memberId: null,
+            memberName: '',
+            rateType: '',
+            rateAmount: ''
+          }
+        : player
+    ));
+  };
+
+  const handlePlayerMemberSelect = (playerId, member) => {
+    setPlayers(prev => prev.map(player => 
+      player.id === playerId 
+        ? { 
+            ...player, 
+            memberId: member.id,
+            memberName: member.name,
+            rateType: member.rate_type,
+            rateAmount: member.rate_amount
+          }
+        : player
+    ));
+    
+    // Clear active member search and dropdown
+    setActiveMemberSearch(null);
+    setShowMemberDropdown(false);
   };
 
   const handleMemberSelect = (member) => {
     setSelectedMember(member);
     setFormData(prev => ({ ...prev, memberName: member.name }));
     setShowMemberDropdown(false);
+    setFilteredMembers([]); // Clear filtered members
   };
 
   const handleSubmit = async (e) => {
@@ -646,22 +931,54 @@ const StartSessionForm = () => {
 
     try {
       const token = localStorage.getItem('adminToken');
+      // Validate that all players have required data
+      const validPlayers = players.slice(0, currentPlayers);
+      const invalidPlayers = validPlayers.filter(player => {
+        if (player.type === 'guest') {
+          return !player.guestName || !player.guestContact || !player.rateType || !player.rateAmount;
+        } else {
+          return !player.memberId;
+        }
+      });
+
+      if (invalidPlayers.length > 0) {
+        setError('Please fill in all required details for all players.');
+        setLoading(false);
+        return;
+      }
+
+      // Create a session with the first player as the primary player
+      // The session will represent the group session with all player details
+      const firstPlayer = validPlayers[0];
+      
       const sessionData = {
-        session_type: sessionType,
-        table_id: parseInt(formData.tableId)
+        session_type: firstPlayer.type,
+        table_id: parseInt(formData.tableId),
+        game_type: gameType,
+        total_players: totalPlayers,
+        current_players: currentPlayers
       };
 
-      if (sessionType === 'guest') {
-        sessionData.guest_name = formData.guestName;
-        sessionData.guest_contact = formData.guestContact;
+      if (firstPlayer.type === 'guest') {
+        sessionData.guest_name = firstPlayer.guestName;
+        sessionData.guest_contact = firstPlayer.guestContact;
+        sessionData.rate_type = firstPlayer.rateType;
+        sessionData.rate_amount = parseFloat(firstPlayer.rateAmount) || 0;
       } else {
-        if (!selectedMember) {
-          setError('Please select a valid member from the dropdown.');
-          setLoading(false);
-          return;
-        }
-        sessionData.customer_id = selectedMember.id;
+        sessionData.customer_id = firstPlayer.memberId;
+        sessionData.rate_type = firstPlayer.rateType;
+        sessionData.rate_amount = firstPlayer.rateAmount;
       }
+
+      // Add all player information to the session data
+      sessionData.all_players = validPlayers.map(player => ({
+        type: player.type,
+        name: player.type === 'guest' ? player.guestName : player.memberName,
+        contact: player.type === 'guest' ? player.guestContact : '',
+        memberId: player.memberId,
+        rateType: player.rateType,
+        rateAmount: player.rateAmount
+      }));
 
       const response = await fetch('http://localhost:8000/sessions/start', {
         method: 'POST',
@@ -676,13 +993,24 @@ const StartSessionForm = () => {
         const result = await response.json();
         setMessage(`Session started successfully! Session ID: ${result.id}`);
         // Reset form
-        setFormData({
+        setPlayers([{
+          id: 1,
+          type: 'guest',
           guestName: '',
           guestContact: '',
+          memberId: null,
           memberName: '',
+          rateType: '',
+          rateAmount: ''
+        }]);
+        setFormData({
           tableId: ''
         });
         setSelectedMember(null);
+        setGameType('snooker');
+        setTotalPlayers(1);
+        setCurrentPlayers(1);
+        setCurrentStep(1);
         
         // Refresh available tables
         const tablesResponse = await fetch('http://localhost:8000/tables/available', {
@@ -692,6 +1020,9 @@ const StartSessionForm = () => {
           const tablesData = await tablesResponse.json();
           setTables(tablesData);
         }
+      } else if (response.status === 409) {
+        const errorData = await response.json();
+        setError(`❌ ${errorData.detail} - Please end the existing session first.`);
       } else {
         const errorData = await response.json();
         setError(errorData.detail || 'Failed to start session');
@@ -707,163 +1038,417 @@ const StartSessionForm = () => {
     <div className="start-session-container">
       <div className="session-card">
         <div className="card-header">
-          <h2>Start New Session</h2>
+          <h2>Start New Game</h2>
           <p>Begin a snooker session for a member or guest</p>
         </div>
 
-        <form className="session-form" onSubmit={handleSubmit}>
-          {/* Session Type Selection */}
-          <div className="session-type-section">
-            <label className="section-label">Session Type</label>
-            <div className="radio-group">
-              <label className={`radio-option ${sessionType === 'guest' ? 'active' : ''}`}>
-                <input
-                  type="radio"
-                  name="sessionType"
-                  value="guest"
-                  checked={sessionType === 'guest'}
-                  onChange={(e) => setSessionType(e.target.value)}
-                />
-                <span className="radio-label">Guest</span>
-              </label>
-              <label className={`radio-option ${sessionType === 'member' ? 'active' : ''}`}>
-                <input
-                  type="radio"
-                  name="sessionType"
-                  value="member"
-                  checked={sessionType === 'member'}
-                  onChange={(e) => setSessionType(e.target.value)}
-                />
-                <span className="radio-label">Member</span>
-              </label>
-            </div>
+        {/* Step Progress Bar */}
+        <div className="step-progress">
+          <div className={`step ${currentStep >= 1 ? 'active' : ''} ${currentStep > 1 ? 'completed' : ''}`}>
+            <div className="step-number">1</div>
+            <div className="step-label">Game Setup</div>
           </div>
+          <div className={`step ${currentStep >= 2 ? 'active' : ''} ${currentStep > 2 ? 'completed' : ''}`}>
+            <div className="step-number">2</div>
+            <div className="step-label">Player Details</div>
+          </div>
+          <div className={`step ${currentStep >= 3 ? 'active' : ''}`}>
+            <div className="step-number">3</div>
+            <div className="step-label">Start Game</div>
+          </div>
+        </div>
 
-          {/* Dynamic Form Fields */}
-          <div className="form-fields">
-            {sessionType === 'guest' ? (
-              // Guest Form Fields
-              <>
-                <div className="form-field">
-                  <label>Guest Name *</label>
-                  <input
-                    type="text"
-                    name="guestName"
-                    value={formData.guestName}
-                    onChange={handleInputChange}
-                    placeholder="Enter guest name"
-                    required
-                  />
+        <form className="session-form" onSubmit={handleSubmit}>
+          {/* Step 1: Game Setup */}
+          {currentStep === 1 && (
+            <div className="step-content">
+              <div className="step-header">
+                <h3>Step 1: Game Setup</h3>
+                <p>Choose your game type and player count</p>
+              </div>
+              
+              <div className="form-fields">
+                {/* Game Type Selection */}
+                <div className="form-section">
+                  <label className="section-label">Game Type</label>
+                  <div className="radio-group">
+                    <label className={`radio-option ${gameType === 'snooker' ? 'active' : ''}`}>
+                      <input
+                        type="radio"
+                        name="gameType"
+                        value="snooker"
+                        checked={gameType === 'snooker'}
+                        onChange={(e) => setGameType(e.target.value)}
+                      />
+                      <span className="radio-label">Snooker</span>
+                    </label>
+                    <label className={`radio-option ${gameType === 'pool' ? 'active' : ''}`}>
+                      <input
+                        type="radio"
+                        name="gameType"
+                        value="pool"
+                        checked={gameType === 'pool'}
+                        onChange={(e) => setGameType(e.target.value)}
+                      />
+                      <span className="radio-label">Pool</span>
+                    </label>
+                    <label className={`radio-option ${gameType === 'billiards' ? 'active' : ''}`}>
+                      <input
+                        type="radio"
+                        name="gameType"
+                        value="billiards"
+                        checked={gameType === 'billiards'}
+                        onChange={(e) => setGameType(e.target.value)}
+                      />
+                      <span className="radio-label">Billiards</span>
+                    </label>
+                  </div>
                 </div>
-                <div className="form-field">
-                  <label>Contact Number *</label>
-                  <input
-                    type="text"
-                    name="guestContact"
-                    value={formData.guestContact}
-                    onChange={handleInputChange}
-                    placeholder="Enter contact number"
-                    required
-                  />
-                </div>
-              </>
-            ) : (
-              // Member Form Fields
-              <>
-                <div className="form-field member-search">
-                  <label>Member Name *</label>
-                  <div className="search-container">
-                    <input
-                      type="text"
-                      name="memberName"
-                      value={formData.memberName}
-                      onChange={handleInputChange}
-                      placeholder="Start typing member name..."
+
+                {/* Number of Players */}
+                <div className="form-section">
+                  <div className="form-field">
+                    <label>Total Players Expected *</label>
+                    <select
+                      value={totalPlayers}
+                      onChange={(e) => {
+                        setTotalPlayers(parseInt(e.target.value));
+                        setCurrentPlayers(1);
+                      }}
                       required
-                      autoComplete="off"
-                    />
-                    {showMemberDropdown && (
-                      <div className="member-dropdown">
-                        {filteredMembers.map(member => (
-                          <div
-                            key={member.id}
-                            className="member-option"
-                            onClick={() => handleMemberSelect(member)}
+                    >
+                      <option value={1}>1 Player</option>
+                      <option value={2}>2 Players</option>
+                      <option value={3}>3 Players</option>
+                      <option value={4}>4 Players</option>
+                      <option value={5}>5 Players</option>
+                      <option value={6}>6 Players</option>
+                    </select>
+                  </div>
+
+                  <div className="form-field">
+                    <label>Current Players Starting *</label>
+                    <select
+                      value={currentPlayers}
+                      onChange={(e) => setCurrentPlayers(parseInt(e.target.value))}
+                      required
+                    >
+                      {Array.from({ length: totalPlayers }, (_, i) => i + 1).map(num => (
+                        <option key={num} value={num}>{num} Player{num > 1 ? 's' : ''}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="step-actions">
+                <button 
+                  type="button" 
+                  className="btn-next"
+                  onClick={() => setCurrentStep(2)}
+                >
+                  Next Step
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 2: Player Details */}
+          {currentStep === 2 && (
+            <div className="step-content">
+              <div className="step-header">
+                <h3>Step 2: Player Details</h3>
+                <p>Enter details for {currentPlayers} player{currentPlayers > 1 ? 's' : ''}</p>
+              </div>
+              
+              <div className="form-fields">
+                {players.slice(0, currentPlayers).map((player, index) => (
+                  <div key={player.id} className="player-card">
+                    <div className="player-header">
+                      <h4>Player {index + 1}</h4>
+                    </div>
+                    
+                    {/* Player Type Selection */}
+                    <div className="form-section">
+                      <label className="section-label">Player Type</label>
+                      <div className="radio-group">
+                        <label className={`radio-option ${player.type === 'guest' ? 'active' : ''}`}>
+                          <input
+                            type="radio"
+                            name={`playerType-${player.id}`}
+                            value="guest"
+                            checked={player.type === 'guest'}
+                            onChange={(e) => handlePlayerTypeChange(player.id, e.target.value)}
+                          />
+                          <span className="radio-label">Guest</span>
+                        </label>
+                        <label className={`radio-option ${player.type === 'member' ? 'active' : ''}`}>
+                          <input
+                            type="radio"
+                            name={`playerType-${player.id}`}
+                            value="member"
+                            checked={player.type === 'member'}
+                            onChange={(e) => handlePlayerTypeChange(player.id, e.target.value)}
+                          />
+                          <span className="radio-label">Member</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Dynamic Form Fields */}
+                    {player.type === 'guest' ? (
+                      // Guest Form Fields
+                      <div className="form-section">
+                        <div className="form-field">
+                          <label>Guest Name *</label>
+                          <input
+                            type="text"
+                            value={player.guestName}
+                            onChange={(e) => handlePlayerInputChange(player.id, 'guestName', e.target.value)}
+                            placeholder="Enter guest name"
+                            required
+                          />
+                        </div>
+                        <div className="form-field">
+                          <label>Contact Number *</label>
+                          <input
+                            type="text"
+                            value={player.guestContact}
+                            onChange={(e) => handlePlayerInputChange(player.id, 'guestContact', e.target.value)}
+                            placeholder="Enter contact number"
+                            required
+                          />
+                        </div>
+                        
+                        {/* Rate Type and Amount for Guest Sessions */}
+                        <div className="form-field">
+                          <label>Rate Type *</label>
+                          <select
+                            value={player.rateType}
+                            onChange={(e) => handlePlayerInputChange(player.id, 'rateType', e.target.value)}
+                            required
                           >
-                            <div className="member-name">{member.name}</div>
-                            <div className="member-contact">{member.contact_number}</div>
+                            <option value="">Select Rate Type</option>
+                            <option value="hourly">Hourly</option>
+                            <option value="30min">30 Minutes</option>
+                            <option value="time played">Time Played (per minute)</option>
+                          </select>
+                        </div>
+                        
+                        <div className="form-field">
+                          <label>Rate Amount *</label>
+                          <input
+                            type="number"
+                            value={player.rateAmount}
+                            onChange={(e) => handlePlayerInputChange(player.id, 'rateAmount', e.target.value)}
+                            placeholder={player.rateType === 'time played' ? '0.00 per minute' : '0.00'}
+                            min="0"
+                            step="0.01"
+                            required
+                          />
+                          <small className="rate-hint">
+                            {player.rateType === 'hourly' && 'Amount per hour'}
+                            {player.rateType === '30min' && 'Amount per 30 minutes'}
+                            {player.rateType === 'time played' && 'Amount per minute'}
+                          </small>
+                        </div>
+                      </div>
+                    ) : (
+                      // Member Form Fields
+                      <div className="form-section">
+                        <div className="form-field member-search">
+                          <label>Member Name *</label>
+                          <div className="search-container">
+                            <input
+                              type="text"
+                              value={player.memberName}
+                              onChange={(e) => handlePlayerInputChange(player.id, 'memberName', e.target.value)}
+                              placeholder="Start typing member name..."
+                              required
+                              autoComplete="off"
+                            />
+                            {showMemberDropdown && activeMemberSearch && activeMemberSearch.playerId === player.id && (
+                              <div className="member-dropdown">
+                                {filteredMembers.map(member => (
+                                  <div
+                                    key={member.id}
+                                    className="member-option"
+                                    onClick={() => handlePlayerMemberSelect(player.id, member)}
+                                  >
+                                    <div className="member-name">{member.name}</div>
+                                    <div className="member-contact">{member.contact_number}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
-                        ))}
+                        </div>
+
+                        {/* Member Details (Read-only when member is selected) */}
+                        {player.memberId && (
+                          <div className="member-details">
+                            <div className="details-grid">
+                              <div className="detail-field">
+                                <label>Contact Number</label>
+                                <input type="text" value={members.find(m => m.id === player.memberId)?.contact_number || ''} readOnly />
+                              </div>
+                              <div className="detail-field">
+                                <label>Rate Type</label>
+                                <input type="text" value={player.rateType} readOnly />
+                              </div>
+                              <div className="detail-field">
+                                <label>Rate Amount</label>
+                                <input type="text" value={`$${player.rateAmount?.toFixed(2) || '0.00'}`} readOnly />
+                              </div>
+                              <div className="detail-field">
+                                <label>Discount</label>
+                                <input type="text" value={`${members.find(m => m.id === player.memberId)?.discount?.toFixed(1) || '0.0'}%`} readOnly />
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-                </div>
+                ))}
+              </div>
 
-                {/* Member Details (Read-only when member is selected) */}
-                {selectedMember && (
-                  <div className="member-details">
-                    <div className="details-grid">
-                      <div className="detail-field">
-                        <label>Contact Number</label>
-                        <input type="text" value={selectedMember.contact_number} readOnly />
-                      </div>
-                      <div className="detail-field">
-                        <label>Rate Type</label>
-                        <input type="text" value={selectedMember.rate_type} readOnly />
-                      </div>
-                      <div className="detail-field">
-                        <label>Rate Amount</label>
-                        <input type="text" value={`$${selectedMember.rate_amount.toFixed(2)}`} readOnly />
-                      </div>
-                      <div className="detail-field">
-                        <label>Discount</label>
-                        <input type="text" value={`${selectedMember.discount.toFixed(1)}%`} readOnly />
-                      </div>
+              <div className="step-actions">
+                <button 
+                  type="button" 
+                  className="btn-prev"
+                  onClick={() => setCurrentStep(1)}
+                >
+                  Previous
+                </button>
+                <button 
+                  type="button" 
+                  className="btn-next"
+                  onClick={() => setCurrentStep(3)}
+                >
+                  Next Step
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Start Session */}
+          {currentStep === 3 && (
+            <div className="step-content">
+              <div className="step-header">
+                <h3>Step 3: Start Session</h3>
+                <p>Review details and select table to start</p>
+              </div>
+              
+              {/* Session Summary */}
+              <div className="session-summary">
+                <div className="summary-card">
+                  <h4>Session Summary</h4>
+                  <div className="summary-grid">
+                    <div className="summary-item">
+                      <span className="summary-label">Game Type:</span>
+                      <span className="summary-value">{gameType.charAt(0).toUpperCase() + gameType.slice(1)}</span>
+                    </div>
+                    <div className="summary-item">
+                      <span className="summary-label">Players:</span>
+                      <span className="summary-value">{currentPlayers} of {totalPlayers}</span>
                     </div>
                   </div>
-                )}
-              </>
-            )}
+                  
+                  {/* Players Summary */}
+                  <div className="players-summary">
+                    <h5>Player Details</h5>
+                    {players.slice(0, currentPlayers).map((player, index) => (
+                      <div key={player.id} className="player-summary-item">
+                        <div className="player-summary-header">
+                          <span className="player-number">Player {index + 1}</span>
+                          <span className={`player-type-badge ${player.type}`}>
+                            {player.type === 'guest' ? 'Guest' : 'Member'}
+                          </span>
+                        </div>
+                        <div className="player-summary-details">
+                          {player.type === 'guest' ? (
+                            <>
+                              <div className="summary-detail">
+                                <span>Name:</span>
+                                <span>{player.guestName || 'Not entered'}</span>
+                              </div>
+                              <div className="summary-detail">
+                                <span>Contact:</span>
+                                <span>{player.guestContact || 'Not entered'}</span>
+                              </div>
+                              <div className="summary-detail">
+                                <span>Rate:</span>
+                                <span>{player.rateType || 'Not selected'} - ${player.rateAmount || '0.00'}</span>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="summary-detail">
+                                <span>Member:</span>
+                                <span>{player.memberName || 'Not selected'}</span>
+                              </div>
+                              <div className="summary-detail">
+                                <span>Rate:</span>
+                                <span>{player.rateType || 'N/A'} - ${player.rateAmount?.toFixed(2) || '0.00'}</span>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
 
-            {/* Table Selection */}
-            <div className="form-field">
-              <label>Select Table *</label>
-              <select
-                name="tableId"
-                value={formData.tableId}
-                onChange={handleInputChange}
-                required
-              >
-                <option value="">Choose an available table</option>
-                {tables.map(table => (
-                  <option key={table.id} value={table.id}>
-                    {table.table_name} - {table.status}
-                  </option>
-                ))}
-              </select>
-              {tables.length === 0 && (
-                <p className="no-tables-msg">No tables available. All tables are currently occupied.</p>
-              )}
+              {/* Table Selection */}
+              <div className="form-section">
+                <div className="form-field">
+                  <label>Select Table *</label>
+                  <select
+                    name="tableId"
+                    value={formData.tableId}
+                    onChange={handleInputChange}
+                    required
+                  >
+                    <option value="">Choose an available table</option>
+                    {tables.map(table => (
+                      <option key={table.id} value={table.id}>
+                        {table.table_name} - {table.status}
+                      </option>
+                    ))}
+                  </select>
+                  {tables.length === 0 && (
+                    <p className="no-tables-msg">No tables available. All tables are currently occupied.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="step-actions">
+                <button 
+                  type="button" 
+                  className="btn-prev"
+                  onClick={() => setCurrentStep(2)}
+                >
+                  Previous
+                </button>
+                <button 
+                  type="submit" 
+                  className="start-session-btn" 
+                  disabled={loading || tables.length === 0}
+                >
+                  {loading ? (
+                    <>
+                      <span className="spinner"></span>
+                      Starting Session...
+                    </>
+                  ) : (
+                    'Start Session'
+                  )}
+                </button>
+              </div>
             </div>
-          </div>
-
-          {/* Submit Button */}
-          <div className="form-actions">
-            <button 
-              type="submit" 
-              className="start-session-btn" 
-              disabled={loading || tables.length === 0}
-            >
-              {loading ? (
-                <>
-                  <span className="spinner"></span>
-                  Starting Session...
-                </>
-              ) : (
-                'Start Session'
-              )}
-            </button>
-          </div>
+          )}
         </form>
 
         {/* Messages */}
@@ -1225,6 +1810,9 @@ function App() {
           <button onClick={() => setDashboardView('register')} className={dashboardView === 'register' ? 'active' : ''}>
             <FiUserPlus /><span>Member Registration</span>
           </button>
+          <button onClick={() => setDashboardView('tables')} className={dashboardView === 'tables' ? 'active' : ''}>
+            <FiTable /><span>Snooker Tables</span>
+          </button>
           <button onClick={() => setDashboardView('startSession')} className={dashboardView === 'startSession' ? 'active' : ''}>
             <FiPlayCircle /><span>Start Session</span>
           </button>
@@ -1232,9 +1820,7 @@ function App() {
             <FiUsers /><span>players</span>
           </button>
 
-          <button onClick={() => setDashboardView('tables')} className={dashboardView === 'tables' ? 'active' : ''}>
-            <FiTable /><span>Snooker Tables</span>
-          </button>
+
           <button onClick={() => setDashboardView('sessions')} className={dashboardView === 'sessions' ? 'active' : ''}>
             <FiDollarSign /><span>Billing</span>
           </button>
