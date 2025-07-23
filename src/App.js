@@ -407,67 +407,141 @@ const MemberManagement = () => {
   );
 };
 
-// --- New Component for Displaying Players ---
+// --- Active Sessions Component (Players Section) ---
 const PlayersList = () => {
-  const [players, setPlayers] = useState([]);
+  const [activeSessions, setActiveSessions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+
+  // Auto-hide success messages
+  useEffect(() => {
+    if (successMessage) {
+      const timer = setTimeout(() => {
+        setSuccessMessage('');
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMessage]);
+
+  const fetchActiveSessions = async () => {
+    try {
+      setLoading(true);
+      const token = localStorage.getItem('adminToken');
+      const response = await fetch('http://127.0.0.1:8000/sessions/active', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setActiveSessions(data);
+        setError('');
+      } else {
+        setError('Failed to fetch active sessions');
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchPlayers = async () => {
-      try {
-        const token = localStorage.getItem('adminToken');
-        const response = await fetch('http://localhost:8000/customers', {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
-        if (!response.ok) {
-          throw new Error('Failed to fetch players');
-        }
-        const data = await response.json();
-        setPlayers(data);
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchPlayers();
+    fetchActiveSessions();
   }, []);
 
-  if (loading) return <p>Loading players...</p>;
-  if (error) return <p className="error-msg">{error}</p>;
+  const getSessionDuration = (startTime) => {
+    const start = new Date(startTime);
+    const now = new Date();
+    const diffMs = now - start;
+    const diffMins = Math.floor(diffMs / 60000);
+    const hours = Math.floor(diffMins / 60);
+    const minutes = diffMins % 60;
+    return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+  };
+
+  const getPlayerName = (session) => {
+    // Use customer name if it's a member, otherwise use guest name
+    return session.customer_name || session.guest_name || `Member ID: ${session.customer_id}`;
+  };
+
+  const getPlayerContact = (session) => {
+    // Use customer contact if it's a member, otherwise use guest contact
+    return session.customer_contact || session.guest_contact || 'N/A';
+  };
 
   return (
-    <section className="card">
-      <h2>Registered Players</h2>
-      <div className="table-container">
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Contact Number</th>
-              <th>Rate Type</th>
-              <th>Rate Amount</th>
-              <th>Discount (%)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {players.map(player => (
-              <tr key={player.id}>
-                <td>{player.name}</td>
-                <td>{player.contact_number}</td>
-                <td>{player.rate_type}</td>
-                <td>{player.rate_amount.toFixed(2)}</td>
-                <td>{player.discount.toFixed(2)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="active-sessions-container">
+      <div className="sessions-header">
+        <div className="header-content">
+          <h2><FiPlayCircle /> Active Sessions</h2>
+          <div className="session-count-badge">
+            {activeSessions.length} active
+          </div>
+        </div>
+        <div className="filters-row">
+          <button className="btn-refresh" onClick={fetchActiveSessions} disabled={loading} title="Refresh Active Sessions">
+            <BiSync className={loading ? 'spinning' : ''} />
+          </button>
+        </div>
       </div>
-    </section>
+
+      {successMessage && (
+        <div className="alert alert-success">{successMessage}</div>
+      )}
+      
+      {error && (
+        <div className="alert alert-error">{error}</div>
+      )}
+
+      <div className="sessions-content">
+        {loading ? (
+          <div className="loading-state">
+            <BiSync className="spinning" /> Loading active sessions...
+          </div>
+        ) : activeSessions.length > 0 ? (
+          <div className="table-container">
+            <table className="sessions-table">
+              <thead>
+                <tr>
+                  <th>Table</th>
+                  <th>Player Name</th>
+                  <th>Contact</th>
+                  <th>Rate Type</th>
+                  <th>Duration</th>
+                  <th>Start Time</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeSessions.map(session => (
+                  <tr key={session.id}>
+                    <td>Table {session.table_id}</td>
+                    <td>{getPlayerName(session)}</td>
+                    <td>{getPlayerContact(session)}</td>
+                    <td>{session.rate_type || 'Guest'}</td>
+                    <td>{getSessionDuration(session.start_time)}</td>
+                    <td>{new Date(session.start_time).toLocaleString()}</td>
+                    <td>
+                      <span className="session-status active">
+                        ACTIVE
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="empty-state">
+            <FiPlayCircle size={48} />
+            <h3>No Active Sessions</h3>
+            <p>No sessions are currently active. Start a new session to see it here.</p>
+          </div>
+        )}
+      </div>
+    </div>
   );
 };
 
