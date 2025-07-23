@@ -158,7 +158,7 @@ const MemberManagement = () => {
         })
       });
 
-      if (response.status === 201) {
+      if (response.status === 200) {
         const result = await response.json();
         setMessage(`Member ${result.name} registered successfully!`);
         setFormData({ name: '', contact_number: '', customer_type: 'member', rate_type: '', rate_amount: '', discount: '' });
