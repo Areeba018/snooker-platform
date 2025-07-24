@@ -11,7 +11,9 @@ import {
   FiLogOut,
   FiMenu,
   FiX,
-  FiRefreshCw
+  FiRefreshCw,
+  FiEye,
+  FiCheck
 } from 'react-icons/fi';
 import { BiSync } from 'react-icons/bi';
 
@@ -414,6 +416,19 @@ const PlayersList = () => {
   const [error, setError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [endingSession, setEndingSession] = useState(null);
+  const [showAddPlayerModal, setShowAddPlayerModal] = useState(false);
+  const [selectedSession, setSelectedSession] = useState(null);
+  const [newPlayer, setNewPlayer] = useState({
+    name: '',
+    contact: '',
+    playerType: 'guest',
+    memberId: null,
+    rateType: 'hourly',
+    rateAmount: 0
+  });
+  const [members, setMembers] = useState([]);
+  const [filteredMembers, setFilteredMembers] = useState([]);
+  const [showMemberDropdown, setShowMemberDropdown] = useState(false);
 
   // Auto-hide success messages
   useEffect(() => {
@@ -450,7 +465,26 @@ const PlayersList = () => {
 
   useEffect(() => {
     fetchActiveSessions();
+    fetchMembers();
   }, []);
+
+  const fetchMembers = async () => {
+    try {
+      const token = localStorage.getItem('adminToken');
+      const response = await fetch('http://127.0.0.1:8000/customers', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setMembers(data);
+      }
+    } catch (err) {
+      console.error('Error fetching members:', err);
+    }
+  };
 
   const getSessionDuration = (startTime) => {
     // Simple: just use start time and current time
@@ -614,19 +648,213 @@ const PlayersList = () => {
     }
   };
 
+  const handleEndPlayerSession = async (sessionId, playerIndex, playerName) => {
+    try {
+      setEndingSession(sessionId);
+      setError('');
+      
+      const token = localStorage.getItem('adminToken');
+      const response = await fetch(`http://127.0.0.1:8000/sessions/${sessionId}/end-player`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          player_index: playerIndex
+        })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        
+        if (result.session_ended) {
+          setSuccessMessage(`Session ended completely. Bill has been generated and is available in the Billing section.`);
+        } else {
+          setSuccessMessage(`Player ${playerName} removed from session. ${result.players_remaining} player(s) remaining.`);
+        }
+        
+        // Refresh active sessions
+        await fetchActiveSessions();
+      } else {
+        const errorData = await response.json();
+        setError(errorData.detail || 'Failed to end player session');
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setEndingSession(null);
+    }
+  };
+
+  const handleEndCompleteSession = async (sessionId) => {
+    if (!window.confirm('Are you sure you want to end the entire session for all remaining players?')) {
+      return;
+    }
+
+    try {
+      setEndingSession(sessionId);
+      setError('');
+      
+      const token = localStorage.getItem('adminToken');
+      const response = await fetch(`http://127.0.0.1:8000/sessions/${sessionId}/end-complete`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        setSuccessMessage(`Session ended successfully. Bill generated for ${result.players_count} player(s). Total cost: $${result.total_cost}`);
+        
+        // Refresh active sessions
+        await fetchActiveSessions();
+      } else {
+        const errorData = await response.json();
+        setError(errorData.detail || 'Failed to end session');
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setEndingSession(null);
+    }
+  };
+
+  const handleAddPlayer = (session) => {
+    setSelectedSession(session);
+    setNewPlayer({
+      name: '',
+      contact: '',
+      playerType: 'guest',
+      memberId: null,
+      rateType: 'hourly',
+      rateAmount: 0
+    });
+    setShowAddPlayerModal(true);
+  };
+
+  const handleAddPlayerSubmit = async (e) => {
+    e.preventDefault();
+    
+    if (!newPlayer.name.trim()) {
+      setError('Player name is required');
+      return;
+    }
+
+    if (newPlayer.playerType === 'guest' && !newPlayer.contact.trim()) {
+      setError('Contact number is required for guest players');
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('adminToken');
+      
+      // Get current session data
+      const currentSession = activeSessions.find(s => s.id === selectedSession.id);
+      const currentPlayers = currentSession.all_players || [];
+      
+      // Add new player to the list
+      const updatedPlayers = [...currentPlayers, {
+        name: newPlayer.name,
+        contact: newPlayer.contact,
+        playerType: newPlayer.playerType,
+        memberId: newPlayer.memberId,
+        rateType: newPlayer.rateType,
+        rateAmount: newPlayer.rateAmount
+      }];
+
+      // Update session with new player
+      const response = await fetch(`http://127.0.0.1:8000/sessions/${selectedSession.id}/add-player`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          player: {
+            name: newPlayer.name,
+            contact: newPlayer.contact,
+            playerType: newPlayer.playerType,
+            memberId: newPlayer.memberId,
+            rateType: newPlayer.rateType,
+            rateAmount: newPlayer.rateAmount
+          }
+        })
+      });
+
+      if (response.ok) {
+        setSuccessMessage('Player added successfully!');
+        setShowAddPlayerModal(false);
+        fetchActiveSessions(); // Refresh the list
+      } else {
+        const errorData = await response.json();
+        setError(errorData.detail || 'Failed to add player');
+      }
+    } catch (err) {
+      setError('Error adding player. Please try again.');
+    }
+  };
+
+  const handlePlayerTypeChange = (type) => {
+    setNewPlayer(prev => ({
+      ...prev,
+      playerType: type,
+      memberId: type === 'member' ? null : prev.memberId,
+      name: type === 'member' ? '' : prev.name,
+      contact: type === 'member' ? '' : prev.contact
+    }));
+    setShowMemberDropdown(false);
+  };
+
+  const handleMemberSearch = (searchTerm) => {
+    if (!searchTerm.trim()) {
+      setFilteredMembers([]);
+      setShowMemberDropdown(false);
+      return;
+    }
+
+    // Get current session players to exclude them
+    const currentSession = activeSessions.find(s => s.id === selectedSession?.id);
+    const currentPlayerNames = currentSession?.all_players?.map(player => player.name) || [];
+    const currentPlayerContacts = currentSession?.all_players?.map(player => player.contact) || [];
+    const currentPlayerIds = currentSession?.all_players?.map(player => player.customerId).filter(id => id) || [];
+
+    const filtered = members.filter(member =>
+      (member.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+       member.contact_number.includes(searchTerm)) &&
+      !currentPlayerNames.includes(member.name) &&
+      !currentPlayerContacts.includes(member.contact_number) &&
+      !currentPlayerIds.includes(member.id)
+    );
+    setFilteredMembers(filtered);
+    setShowMemberDropdown(true);
+  };
+
+  const handleMemberSelect = (member) => {
+    setNewPlayer(prev => ({
+      ...prev,
+      memberId: member.id,
+      name: member.name,
+      contact: member.contact_number,
+      rateType: member.rate_type,
+      rateAmount: member.rate_amount
+    }));
+    setShowMemberDropdown(false);
+  };
+
   return (
     <div className="active-sessions-container">
       <div className="sessions-header">
         <div className="header-content">
           <h2><FiPlayCircle /> Active Sessions</h2>
-          <div className="session-count-badge">
-            {activeSessions.length} active
+          <div className="header-inline">
+            <div className="session-count-badge">{activeSessions.length} ACTIVE</div>
+            <button className="btn-refresh" onClick={fetchActiveSessions} disabled={loading} title="Refresh Active Sessions">
+              <BiSync className={loading ? 'spinning' : ''} />
+            </button>
           </div>
-        </div>
-        <div className="filters-row">
-          <button className="btn-refresh" onClick={fetchActiveSessions} disabled={loading} title="Refresh Active Sessions">
-            <BiSync className={loading ? 'spinning' : ''} />
-          </button>
         </div>
       </div>
 
@@ -644,66 +872,170 @@ const PlayersList = () => {
             <BiSync className="spinning" /> Loading active sessions...
           </div>
         ) : activeSessions.length > 0 ? (
-          <div className="table-container">
-            <table className="sessions-table">
-              <thead>
-                <tr>
-                  <th>Table</th>
-                  <th>Game Type</th>
-                  <th>Players</th>
-                  <th>Player Name</th>
-                  <th>Contact</th>
-                  <th>Rate Type</th>
-                  <th>Rate</th>
-                  <th>Duration</th>
-                  <th>Start Time</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activeSessions.map(session => (
-                  <tr key={session.id}>
-                    <td>{session.table_name || `Table ${session.table_id}`}</td>
-                    <td>
+          <div className="sessions-grid">
+            {activeSessions.map(session => (
+              <div key={session.id} className="session-card">
+                {/* Table Header */}
+                <div className="table-header">
+                  <div className="table-info">
+                    <div className="table-name">{session.table_name || `Table ${session.table_id}`}</div>
+                    <div className="table-details">
                       <span className={`game-type-badge ${session.game_type || 'snooker'}`}>
                         {session.game_type ? session.game_type.charAt(0).toUpperCase() + session.game_type.slice(1) : 'Snooker'}
                       </span>
-                    </td>
-                    <td>
                       <span className="player-count">
-                        {session.current_players || 1} of {session.total_players || 1}
+                        {session.current_players || 1} of {session.total_players || 1} Players
                       </span>
-                    </td>
-                    <td>{getPlayerName(session)}</td>
-                    <td>{getPlayerContact(session)}</td>
-                    <td>{getRateDisplay(session)}</td>
-                    <td>{getRateAmount(session)}</td>
-                    <td>{getSessionDuration(session.start_time)}</td>
-                    <td>{formatStartTime(session.start_time)}</td>
-                    <td>
+                    </div>
+                  </div>
+                  <div className="table-actions">
+                    {(session.current_players || 1) < (session.total_players || 1) && (
                       <button 
-                        className="btn-end-session"
-                        onClick={() => handleEndSession(session.id)}
-                        disabled={endingSession === session.id}
-                        title="End Session"
+                        className="btn-add-player"
+                        onClick={() => handleAddPlayer(session)}
+                        title="Add Player"
                       >
-                        {endingSession === session.id ? (
-                          <>
-                            <span className="spinner"></span>
-                            Ending...
-                          </>
-                        ) : (
-                          <>
-                            <FiX />
-                            End Session
-                          </>
-                        )}
+                        <FiUserPlus />
+                        Add Player
                       </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    )}
+                    <button 
+                      className="btn-end-all"
+                      onClick={() => handleEndCompleteSession(session.id)}
+                      disabled={endingSession === session.id}
+                      title="End entire session for all players"
+                    >
+                      {endingSession === session.id ? (
+                        <>
+                          <span className="spinner"></span>
+                          Ending...
+                        </>
+                      ) : (
+                        <>
+                          <FiX />
+                          End All
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Players List */}
+                <div className="players-section">
+                  <div className="players-header">
+                    <h4>Players</h4>
+                    <span className="session-duration">{getSessionDuration(session.start_time)}</span>
+                  </div>
+                  
+                  <div className="players-list">
+                    {session.all_players && session.all_players.length > 0 ? (
+                      session.all_players.map((player, playerIndex) => (
+                        <div key={playerIndex} className="player-card">
+                          <div className="player-header">
+                            <h5>Player {playerIndex + 1}</h5>
+                          </div>
+                          <div className="player-content">
+                            <div className="player-columns">
+                              <div className="player-column">
+                                <div className="column-header">Name</div>
+                                <div className="column-value player-name">{player.name || 'N/A'}</div>
+                              </div>
+                              <div className="player-column">
+                                <div className="column-header">Contact</div>
+                                <div className="column-value player-contact">{player.contact || 'N/A'}</div>
+                              </div>
+                              <div className="player-column">
+                                <div className="column-header">Rate Type</div>
+                                <div className="column-value rate-type">{player.rateType || 'N/A'}</div>
+                              </div>
+                              <div className="player-column">
+                                <div className="column-header">Rate Amount</div>
+                                <div className="column-value rate-amount">{player.rateAmount ? `$${player.rateAmount}` : 'N/A'}</div>
+                              </div>
+                              <div className="player-column">
+                                <div className="column-header">Start Time</div>
+                                <div className="column-value start-time">{formatStartTime(session.start_time)}</div>
+                              </div>
+                            </div>
+                            <div className="player-actions">
+                              <button 
+                                className="btn-end-game"
+                                onClick={() => handleEndPlayerSession(session.id, playerIndex, player.name || 'Player')}
+                                disabled={endingSession === session.id}
+                                title={`End game for ${player.name || 'Player'}`}
+                              >
+                                {endingSession === session.id ? (
+                                  <>
+                                    <span className="spinner"></span>
+                                    Ending...
+                                  </>
+                                ) : (
+                                  <>
+                                    <FiX />
+                                    End Game
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      // Fallback for single player sessions
+                      <div className="player-card">
+                        <div className="player-header">
+                          <h5>Player 1</h5>
+                        </div>
+                        <div className="player-content">
+                          <div className="player-columns">
+                            <div className="player-column">
+                              <div className="column-header">Name</div>
+                              <div className="column-value player-name">{getPlayerName(session)}</div>
+                            </div>
+                            <div className="player-column">
+                              <div className="column-header">Contact</div>
+                              <div className="column-value player-contact">{getPlayerContact(session)}</div>
+                            </div>
+                            <div className="player-column">
+                              <div className="column-header">Rate Type</div>
+                              <div className="column-value rate-type">{getRateDisplay(session)}</div>
+                            </div>
+                            <div className="player-column">
+                              <div className="column-header">Rate Amount</div>
+                              <div className="column-value rate-amount">{getRateAmount(session)}</div>
+                            </div>
+                            <div className="player-column">
+                              <div className="column-header">Start Time</div>
+                              <div className="column-value start-time">{formatStartTime(session.start_time)}</div>
+                            </div>
+                          </div>
+                          <div className="player-actions">
+                            <button 
+                              className="btn-end-game"
+                              onClick={() => handleEndSession(session.id)}
+                              disabled={endingSession === session.id}
+                              title="End session"
+                            >
+                              {endingSession === session.id ? (
+                                <>
+                                  <span className="spinner"></span>
+                                  Ending...
+                                </>
+                              ) : (
+                                <>
+                                  <FiX />
+                                  End Game
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         ) : (
           <div className="empty-state">
@@ -713,6 +1045,448 @@ const PlayersList = () => {
           </div>
         )}
       </div>
+
+      {/* Add Player Modal */}
+      {showAddPlayerModal && (
+        <div className="modal-overlay" onClick={() => setShowAddPlayerModal(false)}>
+          <div className="add-player-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Add Player to Session</h3>
+              <button className="modal-close" onClick={() => setShowAddPlayerModal(false)}>
+                <FiX />
+              </button>
+            </div>
+            <div className="modal-content">
+              <form onSubmit={handleAddPlayerSubmit}>
+                {/* Player Type Selection */}
+                <div className="form-field">
+                  <label>Player Type</label>
+                  <div className="radio-group">
+                    <label className="radio-option">
+                      <input
+                        type="radio"
+                        name="playerType"
+                        value="guest"
+                        checked={newPlayer.playerType === 'guest'}
+                        onChange={() => handlePlayerTypeChange('guest')}
+                      />
+                      <span className="radio-label">Guest</span>
+                    </label>
+                    <label className="radio-option">
+                      <input
+                        type="radio"
+                        name="playerType"
+                        value="member"
+                        checked={newPlayer.playerType === 'member'}
+                        onChange={() => handlePlayerTypeChange('member')}
+                      />
+                      <span className="radio-label">Member</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Member Selection */}
+                {newPlayer.playerType === 'member' ? (
+                  <div className="form-field">
+                    <label>Select Member</label>
+                    <div className="member-search">
+                      <input
+                        type="text"
+                        placeholder="Search members by name or contact..."
+                        value={newPlayer.name}
+                        onChange={(e) => {
+                          setNewPlayer(prev => ({ ...prev, name: e.target.value }));
+                          handleMemberSearch(e.target.value);
+                        }}
+                        onFocus={() => setShowMemberDropdown(true)}
+                      />
+                      {showMemberDropdown && filteredMembers.length > 0 && (
+                        <div className="member-dropdown">
+                          {filteredMembers.map(member => (
+                            <div
+                              key={member.id}
+                              className="member-option"
+                              onClick={() => handleMemberSelect(member)}
+                            >
+                              <div className="member-name">{member.name}</div>
+                              <div className="member-contact">{member.contact_number}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  /* Guest Information */
+                  <>
+                    <div className="form-field">
+                      <label>Name</label>
+                      <input
+                        type="text"
+                        value={newPlayer.name}
+                        onChange={(e) => setNewPlayer(prev => ({ ...prev, name: e.target.value }))}
+                        placeholder="Enter player name"
+                        required
+                      />
+                    </div>
+                    <div className="form-field">
+                      <label>Contact</label>
+                      <input
+                        type="text"
+                        value={newPlayer.contact}
+                        onChange={(e) => setNewPlayer(prev => ({ ...prev, contact: e.target.value }))}
+                        placeholder="Enter contact number"
+                        required
+                      />
+                    </div>
+                    <div className="form-field">
+                      <label>Rate Type</label>
+                      <select
+                        value={newPlayer.rateType}
+                        onChange={(e) => setNewPlayer(prev => ({ ...prev, rateType: e.target.value }))}
+                      >
+                        <option value="hourly">Hourly</option>
+                        <option value="30min">30 Minutes</option>
+                        <option value="time played">Time Played</option>
+                      </select>
+                    </div>
+                    <div className="form-field">
+                      <label>Rate Amount</label>
+                      <input
+                        type="number"
+                        value={newPlayer.rateAmount}
+                        onChange={(e) => setNewPlayer(prev => ({ ...prev, rateAmount: parseFloat(e.target.value) || 0 }))}
+                        placeholder="Enter rate amount"
+                        min="0"
+                        step="0.01"
+                        required
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div className="modal-footer">
+                  <button type="button" className="btn-secondary" onClick={() => setShowAddPlayerModal(false)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn-primary">
+                    Add Player
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- Billing Module Component ---
+const BillingModule = () => {
+  const [bills, setBills] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+  const [selectedBill, setSelectedBill] = useState(null);
+  const [showBillModal, setShowBillModal] = useState(false);
+
+  const fetchBills = async () => {
+    try {
+      setLoading(true);
+      const token = localStorage.getItem('adminToken');
+      const response = await fetch('http://127.0.0.1:8000/bills', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setBills(data);
+        setError('');
+      } else {
+        setError('Failed to fetch bills');
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchBills();
+  }, []);
+
+  const handlePayBill = async (billId) => {
+    try {
+      const token = localStorage.getItem('adminToken');
+      const response = await fetch(`http://127.0.0.1:8000/bills/${billId}/pay`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (response.ok) {
+        setSuccessMessage('Bill marked as paid successfully!');
+        fetchBills(); // Refresh the list
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        const errorData = await response.json();
+        setError(errorData.detail || 'Failed to mark bill as paid');
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleViewBill = (bill) => {
+    setSelectedBill(bill);
+    setShowBillModal(true);
+  };
+
+  const formatCurrency = (amount) => {
+    if (!amount) return 'N/A';
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD'
+    }).format(amount);
+  };
+
+  const formatDate = (dateString) => {
+    if (!dateString) return 'N/A';
+    return new Date(dateString).toLocaleString('en-US', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  const getStatusBadge = (status) => {
+    return (
+      <span className={`bill-status ${status ? 'paid' : 'pending'}`}>
+        {status ? 'PAID' : 'PENDING'}
+      </span>
+    );
+  };
+
+  const calculateDuration = (startTime, endTime) => {
+    if (!startTime || !endTime) return 'N/A';
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    const diffMs = end - start;
+    const diffMins = Math.floor(diffMs / 60000);
+    const hours = Math.floor(diffMins / 60);
+    const minutes = diffMins % 60;
+    return `${hours}h ${minutes}m`;
+  };
+
+  return (
+    <div className="billing-container">
+      <div className="billing-header">
+        <div className="header-content">
+          <h2><FiDollarSign /> Billing Management</h2>
+        </div>
+        <div className="header-actions">
+          <div className="bill-count-badge">
+            {bills.length} BILLS
+          </div>
+          <button className="btn-refresh" onClick={fetchBills} disabled={loading} title="Refresh Bills">
+            <BiSync className={loading ? 'spinning' : ''} />
+          </button>
+        </div>
+      </div>
+
+      {successMessage && (
+        <div className="alert alert-success">{successMessage}</div>
+      )}
+      
+      {error && (
+        <div className="alert alert-error">{error}</div>
+      )}
+
+      <div className="billing-content">
+        {loading ? (
+          <div className="loading-state">
+            <BiSync className="spinning" /> Loading bills...
+          </div>
+        ) : bills.length > 0 ? (
+          <div className="table-container">
+            <table className="bills-table">
+              <thead>
+                <tr>
+                  <th>Bill ID</th>
+                  <th>Customer</th>
+                  <th>Table</th>
+                  <th>Session Duration</th>
+                  <th>Rate Type</th>
+                  <th>Rate Amount</th>
+                  <th>Total Cost</th>
+                  <th>Date Issued</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bills.map(bill => (
+                  <tr key={bill.id}>
+                    <td>#{bill.id}</td>
+                    <td>
+                      <div className="customer-info">
+                        <div className="customer-name">
+                          {bill.customer_name || bill.guest_name || 'N/A'}
+                        </div>
+                        <div className="customer-contact">
+                          {bill.customer_contact || bill.guest_contact || 'N/A'}
+                        </div>
+                      </div>
+                    </td>
+                    <td>{bill.table_name || `Table ${bill.table_id}`}</td>
+                    <td>
+                      <div className="session-times">
+                        <div>Duration: {calculateDuration(bill.start_time, bill.end_time)}</div>
+                        <div>Start: {formatDate(bill.start_time)}</div>
+                        <div>End: {formatDate(bill.end_time)}</div>
+                      </div>
+                    </td>
+                    <td>{bill.rate_type || 'N/A'}</td>
+                    <td>{formatCurrency(bill.base_rate)}</td>
+                    <td>
+                      <div className="amount-info">
+                        <div className="total-amount">{formatCurrency(bill.total_cost)}</div>
+                        {bill.discount && bill.discount > 0 && (
+                          <div className="discount-info">Discount: {formatCurrency(bill.discount)}</div>
+                        )}
+                      </div>
+                    </td>
+                    <td>{formatDate(bill.date_issued)}</td>
+                    <td>{getStatusBadge(bill.paid)}</td>
+                    <td>
+                      <div className="bill-actions">
+                        <button 
+                          className="btn-view-bill"
+                          onClick={() => handleViewBill(bill)}
+                          title="View Bill Details"
+                        >
+                          <FiEye />
+                          View
+                        </button>
+                        {!bill.paid && (
+                          <button 
+                            className="btn-pay-bill"
+                            onClick={() => handlePayBill(bill.id)}
+                            title="Mark as Paid"
+                          >
+                            <FiCheck />
+                            Pay
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="empty-state">
+            <FiDollarSign size={48} />
+            <h3>No Bills Found</h3>
+            <p>No bills have been generated yet. End a session to create bills.</p>
+          </div>
+        )}
+      </div>
+
+      {/* Bill Details Modal */}
+      {showBillModal && selectedBill && (
+        <div className="modal-overlay" onClick={() => setShowBillModal(false)}>
+          <div className="bill-details-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Bill Details - #{selectedBill.id}</h3>
+              <button className="modal-close" onClick={() => setShowBillModal(false)}>
+                <FiX />
+              </button>
+            </div>
+            <div className="modal-content">
+              <div className="bill-details-grid">
+                <div className="detail-section">
+                  <h4>Customer Information</h4>
+                  <div className="detail-item">
+                    <span className="label">Name:</span>
+                    <span className="value">{selectedBill.customer_name || selectedBill.guest_name || 'N/A'}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="label">Contact:</span>
+                    <span className="value">{selectedBill.customer_contact || selectedBill.guest_contact || 'N/A'}</span>
+                  </div>
+                </div>
+                
+                <div className="detail-section">
+                  <h4>Session Information</h4>
+                  <div className="detail-item">
+                    <span className="label">Table:</span>
+                    <span className="value">{selectedBill.table_name || `Table ${selectedBill.table_id}`}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="label">Duration:</span>
+                    <span className="value">{calculateDuration(selectedBill.start_time, selectedBill.end_time)}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="label">Start Time:</span>
+                    <span className="value">{formatDate(selectedBill.start_time)}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="label">End Time:</span>
+                    <span className="value">{formatDate(selectedBill.end_time)}</span>
+                  </div>
+                </div>
+                
+                <div className="detail-section">
+                  <h4>Billing Details</h4>
+                  <div className="detail-item">
+                    <span className="label">Base Rate:</span>
+                    <span className="value">{formatCurrency(selectedBill.base_rate)}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="label">Discount:</span>
+                    <span className="value">{formatCurrency(selectedBill.discount || 0)}</span>
+                  </div>
+                  <div className="detail-item total-row">
+                    <span className="label">Total Cost:</span>
+                    <span className="value">{formatCurrency(selectedBill.total_cost)}</span>
+                  </div>
+                </div>
+                
+                {selectedBill.notes && (
+                  <div className="bill-notes">
+                    <h4>Notes</h4>
+                    <p>{selectedBill.notes}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="modal-footer">
+              {!selectedBill.paid && (
+                <button 
+                  className="btn-pay-bill-large"
+                  onClick={() => {
+                    handlePayBill(selectedBill.id);
+                    setShowBillModal(false);
+                  }}
+                >
+                  <FiCheck />
+                  Mark as Paid
+                </button>
+              )}
+              <button className="btn-close-modal" onClick={() => setShowBillModal(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -1814,15 +2588,15 @@ function App() {
             <FiTable /><span>Snooker Tables</span>
           </button>
           <button onClick={() => setDashboardView('startSession')} className={dashboardView === 'startSession' ? 'active' : ''}>
-            <FiPlayCircle /><span>Start Session</span>
+            <FiPlayCircle /><span>Start Game</span>
           </button>
           <button onClick={() => setDashboardView('customers')} className={dashboardView === 'customers' ? 'active' : ''}>
             <FiUsers /><span>players</span>
           </button>
 
 
-          <button onClick={() => setDashboardView('sessions')} className={dashboardView === 'sessions' ? 'active' : ''}>
-            <FiDollarSign /><span>Billing</span>
+          <button onClick={() => setDashboardView('billing')} className={dashboardView === 'billing' ? 'active' : ''}>
+            <FiDollarSign /><span>$ Billing</span>
           </button>
           <button onClick={() => setDashboardView('reports')} className={dashboardView === 'reports' ? 'active' : ''}>
             <FiFileText /><span>Reports</span>
@@ -1851,16 +2625,11 @@ function App() {
           {dashboardView === 'customers' && <PlayersList />}
           {dashboardView === 'startSession' && <StartSessionForm />}
           {dashboardView === 'tables' && <TableManagement />}
-          {dashboardView === 'sessions' && (
-            <section className="card">
-              <h2>Sessions / Billing</h2>
-              <p>Manage sessions and invoices here.</p>
-            </section>
-          )}
+          {dashboardView === 'billing' && <BillingModule />}
           {dashboardView === 'reports' && (
             <section className="card">
               <h2>Reports</h2>
-              <p>View reports with filters (e.g., today’s players, total cost, etc.).</p>
+              <p>View reports with filters (e.g., today's players, total cost, etc.).</p>
             </section>
           )}
         </div>
