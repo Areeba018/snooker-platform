@@ -924,16 +924,12 @@ const PlayersList = () => {
                 <div className="players-section">
                   <div className="players-header">
                     <h4>Players</h4>
-                    <span className="session-duration">{getSessionDuration(session.start_time)}</span>
                   </div>
                   
                   <div className="players-list">
                     {session.all_players && session.all_players.length > 0 ? (
                       session.all_players.map((player, playerIndex) => (
                         <div key={playerIndex} className="player-card">
-                          <div className="player-header">
-                            <h5>Player {playerIndex + 1}</h5>
-                          </div>
                           <div className="player-content">
                             <div className="player-columns">
                               <div className="player-column">
@@ -955,6 +951,10 @@ const PlayersList = () => {
                               <div className="player-column">
                                 <div className="column-header">Start Time</div>
                                 <div className="column-value start-time">{formatStartTime(session.start_time)}</div>
+                              </div>
+                              <div className="player-column">
+                                <div className="column-header">Duration</div>
+                                <div className="column-value duration">{getSessionDuration(session.start_time)}</div>
                               </div>
                             </div>
                             <div className="player-actions">
@@ -983,9 +983,6 @@ const PlayersList = () => {
                     ) : (
                       // Fallback for single player sessions
                       <div className="player-card">
-                        <div className="player-header">
-                          <h5>Player 1</h5>
-                        </div>
                         <div className="player-content">
                           <div className="player-columns">
                             <div className="player-column">
@@ -1007,6 +1004,10 @@ const PlayersList = () => {
                             <div className="player-column">
                               <div className="column-header">Start Time</div>
                               <div className="column-value start-time">{formatStartTime(session.start_time)}</div>
+                            </div>
+                            <div className="player-column">
+                              <div className="column-header">Duration</div>
+                              <div className="column-value duration">{getSessionDuration(session.start_time)}</div>
                             </div>
                           </div>
                           <div className="player-actions">
@@ -1195,6 +1196,29 @@ const BillingModule = () => {
     try {
       setLoading(true);
       const token = localStorage.getItem('adminToken');
+      
+      // First, fix any member sessions that might have issues
+      try {
+        const fixResponse = await fetch('http://127.0.0.1:8000/fix-member-sessions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        
+        if (fixResponse.ok) {
+          const fixResult = await fixResponse.json();
+          if (fixResult.fixed_sessions > 0) {
+            setSuccessMessage(`✅ Fixed ${fixResult.fixed_sessions} member sessions`);
+            setTimeout(() => setSuccessMessage(''), 3000);
+          }
+        }
+      } catch (fixErr) {
+        // Silently continue if fix fails
+        console.log('Fix member sessions failed:', fixErr);
+      }
+      
+      // Then fetch bills
       const response = await fetch('http://127.0.0.1:8000/bills', {
         headers: {
           'Authorization': `Bearer ${token}`
@@ -1239,6 +1263,8 @@ const BillingModule = () => {
       setError(err.message);
     }
   };
+
+
 
   const handleViewBill = (bill) => {
     setSelectedBill(bill);
@@ -1293,7 +1319,7 @@ const BillingModule = () => {
           <div className="bill-count-badge">
             {bills.length} BILLS
           </div>
-          <button className="btn-refresh" onClick={fetchBills} disabled={loading} title="Refresh Bills">
+          <button className="btn-refresh" onClick={fetchBills} disabled={loading} title="Refresh Bills & Fix Member Sessions">
             <BiSync className={loading ? 'spinning' : ''} />
           </button>
         </div>
@@ -1321,8 +1347,7 @@ const BillingModule = () => {
                   <th>Customer</th>
                   <th>Table</th>
                   <th>Session Duration</th>
-                  <th>Rate Type</th>
-                  <th>Rate Amount</th>
+                  <th>Rate Information</th>
                   <th>Total Cost</th>
                   <th>Date Issued</th>
                   <th>Status</th>
@@ -1351,8 +1376,12 @@ const BillingModule = () => {
                         <div>End: {formatDate(bill.end_time)}</div>
                       </div>
                     </td>
-                    <td>{bill.rate_type || 'N/A'}</td>
-                    <td>{formatCurrency(bill.base_rate)}</td>
+                    <td>
+                      <div className="rate-info">
+                        <div className="rate-type">{bill.rate_type || 'N/A'}</div>
+                        <div className="rate-amount">{formatCurrency(bill.base_rate)}</div>
+                      </div>
+                    </td>
                     <td>
                       <div className="amount-info">
                         <div className="total-amount">{formatCurrency(bill.total_cost)}</div>
@@ -1446,13 +1475,21 @@ const BillingModule = () => {
                 <div className="detail-section">
                   <h4>Billing Details</h4>
                   <div className="detail-item">
+                    <span className="label">Rate Type:</span>
+                    <span className="value">{selectedBill.rate_type || 'N/A'}</span>
+                  </div>
+                  <div className="detail-item">
                     <span className="label">Base Rate:</span>
                     <span className="value">{formatCurrency(selectedBill.base_rate)}</span>
                   </div>
-                  <div className="detail-item">
-                    <span className="label">Discount:</span>
-                    <span className="value">{formatCurrency(selectedBill.discount || 0)}</span>
-                  </div>
+                  {selectedBill.discount && selectedBill.discount > 0 && (
+                    <div className="detail-item">
+                      <span className="label">Discount:</span>
+                      <span className="value">
+                        {formatCurrency(selectedBill.discount)} (${selectedBill.discount_percentage || 40}%)
+                      </span>
+                    </div>
+                  )}
                   <div className="detail-item total-row">
                     <span className="label">Total Cost:</span>
                     <span className="value">{formatCurrency(selectedBill.total_cost)}</span>
@@ -2499,6 +2536,469 @@ const TableManagement = () => {
   );
 };
 
+const ReportsModule = () => {
+  const [activeTab, setActiveTab] = useState('today');
+  const [loading, setLoading] = useState(false);
+  const [reports, setReports] = useState({});
+  const [filters, setFilters] = useState({
+    startDate: new Date().toISOString().split('T')[0],
+    endDate: new Date().toISOString().split('T')[0],
+    playerType: 'all',
+    tableId: 'all',
+    rateType: 'all'
+  });
+
+  const formatCurrency = (amount) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD'
+    }).format(amount || 0);
+  };
+
+  const formatDate = (dateString) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+  };
+
+  const formatDateTime = (dateString) => {
+    return new Date(dateString).toLocaleString('en-US', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  };
+
+  const calculateDuration = (startTime, endTime) => {
+    if (!startTime || !endTime) return '0m';
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    const diffMs = end - start;
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    const hours = Math.floor(diffMins / 60);
+    const mins = diffMins % 60;
+    return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+  };
+
+  const fetchTodayReport = async () => {
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('adminToken');
+      const response = await fetch('http://127.0.0.1:8000/reports/today', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setReports(prev => ({ ...prev, today: data }));
+      }
+    } catch (error) {
+      console.error('Error fetching today report:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchCustomRangeReport = async () => {
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('adminToken');
+      const queryParams = new URLSearchParams({
+        start_date: filters.startDate,
+        end_date: filters.endDate,
+        player_type: filters.playerType,
+        table_id: filters.tableId,
+        rate_type: filters.rateType
+      });
+      
+      const response = await fetch(`http://127.0.0.1:8000/reports/custom-range?${queryParams}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setReports(prev => ({ ...prev, customRange: data }));
+      }
+    } catch (error) {
+      console.error('Error fetching custom range report:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchDailySummaryReport = async () => {
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('adminToken');
+      const queryParams = new URLSearchParams({
+        start_date: filters.startDate,
+        end_date: filters.endDate
+      });
+      
+      const response = await fetch(`http://127.0.0.1:8000/reports/daily-summary?${queryParams}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setReports(prev => ({ ...prev, dailySummary: data }));
+      }
+    } catch (error) {
+      console.error('Error fetching daily summary report:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchTableUsageReport = async () => {
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('adminToken');
+      const queryParams = new URLSearchParams({
+        start_date: filters.startDate,
+        end_date: filters.endDate
+      });
+      
+      const response = await fetch(`http://127.0.0.1:8000/reports/table-usage?${queryParams}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setReports(prev => ({ ...prev, tableUsage: data }));
+      }
+    } catch (error) {
+      console.error('Error fetching table usage report:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+
+
+  useEffect(() => {
+    if (activeTab === 'today') {
+      fetchTodayReport();
+    } else if (activeTab === 'customRange') {
+      fetchCustomRangeReport();
+    } else if (activeTab === 'dailySummary') {
+      fetchDailySummaryReport();
+        } else if (activeTab === 'tableUsage') {
+      fetchTableUsageReport();
+    }
+  }, [activeTab, filters]);
+
+  const handleFilterChange = (field, value) => {
+    setFilters(prev => ({ ...prev, [field]: value }));
+  };
+
+  const renderTodayReport = () => (
+    <div className="report-section">
+      <div className="report-header">
+        <h3>Today's Player Report</h3>
+        <button onClick={fetchTodayReport} className="btn-refresh" disabled={loading}>
+          {loading ? 'Loading...' : 'Refresh'}
+        </button>
+      </div>
+      
+      {reports.today && reports.today.length > 0 ? (
+        <div className="table-container">
+          <table className="modern-table">
+            <thead>
+              <tr>
+                <th>Player Name</th>
+                <th>Type</th>
+                <th>Table</th>
+                <th>Duration</th>
+                <th>Start Time</th>
+                <th>End Time</th>
+                <th>Amount Paid</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reports.today.map((player, index) => (
+                <tr key={index}>
+                  <td>{player.player_name}</td>
+                  <td>
+                    <span className={`type-badge ${player.player_type}`}>
+                      {player.player_type}
+                    </span>
+                  </td>
+                  <td>{player.table_name}</td>
+                  <td>{calculateDuration(player.start_time, player.end_time)}</td>
+                  <td>{formatDateTime(player.start_time)}</td>
+                  <td>{formatDateTime(player.end_time)}</td>
+                  <td className="amount-cell">{formatCurrency(player.amount_paid)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="empty-state">
+          <p>No players found for today.</p>
+        </div>
+      )}
+    </div>
+  );
+
+  const renderCustomRangeReport = () => (
+    <div className="report-section">
+      <div className="report-header">
+        <h3>Custom Date Range Report</h3>
+        <div className="filter-controls">
+          <input
+            type="date"
+            value={filters.startDate}
+            onChange={(e) => handleFilterChange('startDate', e.target.value)}
+            className="filter-input"
+          />
+          <input
+            type="date"
+            value={filters.endDate}
+            onChange={(e) => handleFilterChange('endDate', e.target.value)}
+            className="filter-input"
+          />
+          <select
+            value={filters.playerType}
+            onChange={(e) => handleFilterChange('playerType', e.target.value)}
+            className="filter-select"
+          >
+            <option value="all">All Players</option>
+            <option value="member">Members Only</option>
+            <option value="guest">Guests Only</option>
+          </select>
+          <select
+            value={filters.rateType}
+            onChange={(e) => handleFilterChange('rateType', e.target.value)}
+            className="filter-select"
+          >
+            <option value="all">All Rate Types</option>
+            <option value="hourly">Hourly</option>
+            <option value="30min">30min</option>
+            <option value="time played">Time Played</option>
+          </select>
+        </div>
+      </div>
+      
+      {reports.customRange && reports.customRange.length > 0 ? (
+        <div className="table-container">
+          <table className="modern-table">
+            <thead>
+              <tr>
+                <th>Player Name</th>
+                <th>Type</th>
+                <th>Table</th>
+                <th>Rate Type</th>
+                <th>Duration</th>
+                <th>Start Time</th>
+                <th>End Time</th>
+                <th>Amount Paid</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reports.customRange.map((player, index) => (
+                <tr key={index}>
+                  <td>{player.player_name}</td>
+                  <td>
+                    <span className={`type-badge ${player.player_type}`}>
+                      {player.player_type}
+                    </span>
+                  </td>
+                  <td>{player.table_name}</td>
+                  <td>
+                    <span className={`rate-badge ${player.rate_type}`}>
+                      {player.rate_type}
+                    </span>
+                  </td>
+                  <td>{calculateDuration(player.start_time, player.end_time)}</td>
+                  <td>{formatDateTime(player.start_time)}</td>
+                  <td>{formatDateTime(player.end_time)}</td>
+                  <td className="amount-cell">{formatCurrency(player.amount_paid)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="empty-state">
+          <p>No data found for the selected date range.</p>
+        </div>
+      )}
+    </div>
+  );
+
+  const renderDailySummaryReport = () => (
+    <div className="report-section">
+      <div className="report-header">
+        <h3>Daily Summary Report</h3>
+        <div className="filter-controls">
+          <input
+            type="date"
+            value={filters.startDate}
+            onChange={(e) => handleFilterChange('startDate', e.target.value)}
+            className="filter-input"
+          />
+          <input
+            type="date"
+            value={filters.endDate}
+            onChange={(e) => handleFilterChange('endDate', e.target.value)}
+            className="filter-input"
+          />
+        </div>
+      </div>
+      
+      {reports.dailySummary && reports.dailySummary.length > 0 ? (
+        <div className="table-container">
+          <table className="modern-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Total Players</th>
+                <th>Total Duration</th>
+                <th>Revenue Collected</th>
+                <th>Most Active Table</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reports.dailySummary.map((summary, index) => (
+                <tr key={index}>
+                  <td>{formatDate(summary.date)}</td>
+                  <td>{summary.total_players}</td>
+                  <td>{summary.total_duration}</td>
+                  <td className="amount-cell">{formatCurrency(summary.revenue)}</td>
+                  <td>{summary.most_active_table}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="empty-state">
+          <p>No daily summary data found.</p>
+        </div>
+      )}
+    </div>
+  );
+
+  const renderTableUsageReport = () => (
+    <div className="report-section">
+      <div className="report-header">
+        <h3>Table Usage Report</h3>
+        <div className="filter-controls">
+          <input
+            type="date"
+            value={filters.startDate}
+            onChange={(e) => handleFilterChange('startDate', e.target.value)}
+            className="filter-input"
+          />
+          <input
+            type="date"
+            value={filters.endDate}
+            onChange={(e) => handleFilterChange('endDate', e.target.value)}
+            className="filter-input"
+          />
+        </div>
+      </div>
+      
+      {reports.tableUsage && reports.tableUsage.length > 0 ? (
+        <div className="table-container">
+          <table className="modern-table">
+            <thead>
+              <tr>
+                <th>Table No</th>
+                <th>Total Sessions</th>
+                <th>Total Duration</th>
+                <th>Idle Time</th>
+                <th>Usage %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reports.tableUsage.map((table, index) => (
+                <tr key={index}>
+                  <td>{table.table_name}</td>
+                  <td>{table.total_sessions}</td>
+                  <td>{table.total_duration}</td>
+                  <td>{table.idle_time}</td>
+                  <td>
+                    <div className="usage-bar">
+                      <div 
+                        className="usage-fill" 
+                        style={{ width: `${table.usage_percentage}%` }}
+                      ></div>
+                      <span>{table.usage_percentage}%</span>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="empty-state">
+          <p>No table usage data found.</p>
+        </div>
+      )}
+    </div>
+  );
+
+
+
+  return (
+    <div className="reports-container">
+      <div className="reports-header">
+        <h2>📊 Reports & Analytics</h2>
+        <p>Comprehensive reports for your snooker club management</p>
+      </div>
+
+      <div className="reports-tabs">
+        <button 
+          className={`tab-button ${activeTab === 'today' ? 'active' : ''}`}
+          onClick={() => setActiveTab('today')}
+        >
+          📅 Today's Report
+        </button>
+        <button 
+          className={`tab-button ${activeTab === 'customRange' ? 'active' : ''}`}
+          onClick={() => setActiveTab('customRange')}
+        >
+          🕓 Custom Range
+        </button>
+        <button 
+          className={`tab-button ${activeTab === 'dailySummary' ? 'active' : ''}`}
+          onClick={() => setActiveTab('dailySummary')}
+        >
+          📈 Daily Summary
+        </button>
+        <button 
+          className={`tab-button ${activeTab === 'tableUsage' ? 'active' : ''}`}
+          onClick={() => setActiveTab('tableUsage')}
+        >
+          🪑 Table Usage
+        </button>
+
+      </div>
+
+      <div className="reports-content">
+        {activeTab === 'today' && renderTodayReport()}
+        {activeTab === 'customRange' && renderCustomRangeReport()}
+        {activeTab === 'dailySummary' && renderDailySummaryReport()}
+        {activeTab === 'tableUsage' && renderTableUsageReport()}
+
+      </div>
+    </div>
+  );
+};
+
 function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [dashboardView, setDashboardView] = useState('home');
@@ -2596,7 +3096,7 @@ function App() {
 
 
           <button onClick={() => setDashboardView('billing')} className={dashboardView === 'billing' ? 'active' : ''}>
-            <FiDollarSign /><span>$ Billing</span>
+            <FiDollarSign /><span>Billing</span>
           </button>
           <button onClick={() => setDashboardView('reports')} className={dashboardView === 'reports' ? 'active' : ''}>
             <FiFileText /><span>Reports</span>
@@ -2612,7 +3112,7 @@ function App() {
             <button className="sidebar-toggle" onClick={() => setIsSidebarOpen(!isSidebarOpen)}>
                 {isSidebarOpen ? <FiX /> : <FiMenu />}
             </button>
-        </header>
+      </header>
 
         <div className="content-area">
           {dashboardView === 'home' && (
@@ -2626,12 +3126,7 @@ function App() {
           {dashboardView === 'startSession' && <StartSessionForm />}
           {dashboardView === 'tables' && <TableManagement />}
           {dashboardView === 'billing' && <BillingModule />}
-          {dashboardView === 'reports' && (
-            <section className="card">
-              <h2>Reports</h2>
-              <p>View reports with filters (e.g., today's players, total cost, etc.).</p>
-            </section>
-          )}
+          {dashboardView === 'reports' && <ReportsModule />}
         </div>
       </main>
     </div>
@@ -2664,9 +3159,9 @@ function App() {
     return (
       <div className="app-container" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
         <div>Checking authentication...</div>
-      </div>
-    );
-  }
+    </div>
+  );
+}
 
   return (
     <div className="app-container">
